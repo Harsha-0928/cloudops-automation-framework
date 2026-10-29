@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.py[cod]
+cloudops.db
+.env
+.pytest_cache/

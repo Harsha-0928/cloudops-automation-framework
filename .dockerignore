@@ -1,0 +1,6 @@
+.venv
+__pycache__
+*.pyc
+cloudops.db
+.git
+.pytest_cache

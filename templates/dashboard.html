@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}CloudOps | Overview{% endblock %}
+{% block page_title %}Deployment overview{% endblock %}
+{% block content %}
+<section class="welcome">
+  <div><div class="eyebrow light">YOUR CLOUD DELIVERY WORKSPACE</div><h1>Build. Deploy. Observe.</h1>
+  <p>Track deployment activity and review common failure clues from one dashboard.</p></div>
+  <a class="button button-light" href="#new-deployment">＋ Add deployment</a>
+</section>
+
+<div class="notice"><strong>Prototype note:</strong> Records on this page are stored in SQLite. AWS, Kubernetes and CI/CD are not connected yet; use the form and demo action to show the planned workflow.</div>
+
+<section class="stats">
+  <div class="stat-card"><div class="stat-label">TOTAL DEPLOYMENTS</div><div class="stat-number">{{ total }}</div><div class="stat-foot">All recorded runs</div></div>
+  <div class="stat-card"><div class="stat-label">SUCCESSFUL / RUNNING</div><div class="stat-number green">{{ successful }}</div><div class="stat-foot">Success or running status</div></div>
+  <div class="stat-card"><div class="stat-label">FAILED DEPLOYMENTS</div><div class="stat-number red">{{ failed }}</div><div class="stat-foot">Needs investigation</div></div>
+  <div class="stat-card"><div class="stat-label">APPLICATION HEALTH</div><div class="health-line"><span class="pulse"></span> Demo app healthy</div><div class="stat-foot"><a href="{{ url_for('health') }}" target="_blank">Check health API ↗</a></div></div>
+</section>
+
+<section class="panel" id="deployments">
+  <div class="panel-heading"><div><h2>Recent deployments</h2><p>Deployment records stored in the prototype database</p></div><a class="text-link" href="{{ url_for('deployments_api') }}" target="_blank">View API JSON ↗</a></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>PROJECT</th><th>ENVIRONMENT</th><th>STATUS</th><th>FAILURE TYPE</th><th>TIME</th><th>ACTION</th></tr></thead>
+    <tbody>
+    {% for d in deployments %}
+      <tr>
+        <td><div class="project-name"><span class="project-icon">▣</span><div><strong>{{ d.project_name }}</strong><small>Deployment #{{ d.id }}</small></div></div></td>
+        <td>{{ d.environment }}</td>
+        <td><span class="status status-{{ d.status|lower }}">{{ d.status }}</span></td>
+        <td>{{ d.failure_type if d.failure_type != 'None' else '—' }}</td>
+        <td class="muted">{{ d.created_at }}</td>
+        <td><a class="text-link" href="{{ url_for('diagnosis', deployment_id=d.id) }}">Details →</a></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6">No deployments yet. Add your first record below.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+
+<section class="two-col">
+  <div class="panel" id="new-deployment">
+    <div class="panel-heading"><div><h2>Add deployment record</h2><p>Record a deployment for your demonstration</p></div></div>
+    <form method="post" action="{{ url_for('create_deployment') }}" class="form-grid">
+      <label>Project name<input name="project_name" placeholder="e.g. Student Portal" required maxlength="100"></label>
+      <div class="form-row">
+        <label>Environment<select name="environment"><option>Development</option><option>Staging</option><option>Production</option></select></label>
+        <label>Status<select name="status"><option>Running</option><option>Success</option><option>Failed</option></select></label>
+      </div>
+      <label>Failure category (if failed)<select name="failure_type"><option>None</option><option>ImagePullBackOff</option><option>CrashLoopBackOff</option><option>Readiness probe failed</option><option>CI build failed</option></select></label>
+      <label>Notes<textarea name="notes" rows="2" placeholder="Optional notes about this run"></textarea></label>
+      <button class="button" type="submit">Save deployment record</button>
+    </form>
+  </div>
+  <div class="panel">
+    <div class="panel-heading"><div><h2>Failure diagnosis demo</h2><p>Generate a sample failure and view suggested checks</p></div></div>
+    <div class="diagnostic-box"><div class="diagnostic-icon">⌁</div><div><strong>Rule-based guidance</strong><p>Maps selected failure categories to a probable cause and troubleshooting steps. It does not inspect live AWS or Kubernetes logs.</p></div></div>
+    <a class="button button-outline full-button" href="{{ url_for('demo_failure') }}">＋ Create simulated failure</a>
+    <div class="mini-flow"><span>Build</span><i>→</i><span>Deploy</span><i>→</i><span>Monitor</span><i>→</i><span>Diagnose</span></div>
+  </div>
+</section>
+{% endblock %}

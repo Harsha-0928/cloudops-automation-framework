@@ -1,0 +1,4 @@
+{% extends "base.html" %}
+{% block title %}CloudOps | Error{% endblock %}
+{% block page_title %}Something went wrong{% endblock %}
+{% block content %}<section class="panel"><h2>Unexpected application error</h2><p>Return to the dashboard and try again. Check the terminal for the developer error message.</p><a class="button" href="{{ url_for('dashboard') }}">Return to dashboard</a></section>{% endblock %}
