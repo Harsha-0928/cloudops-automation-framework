@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   test:
+    name: Run Python tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -57,7 +58,7 @@ jobs:
           tags: |
             harsha2895/cloudops-prototype:latest
             harsha2895/cloudops-prototype:sha-${{ github.sha }}
-   
+
   ssm-command-check:
     name: Verify EC2 command through SSM
     needs: build-and-push
@@ -77,6 +78,7 @@ jobs:
       - name: Send harmless command to EC2
         env:
           INSTANCE_ID: ${{ secrets.AWS_EC2_INSTANCE_ID }}
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -121,3 +123,173 @@ jobs:
           echo "Timed out waiting for SSM command."
           exit 1
 
+  deploy:
+    name: Deploy CloudOps to EC2
+    needs: ssm-command-check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+
+      - name: Deploy and verify health
+        env:
+          INSTANCE_ID: ${{ secrets.AWS_EC2_INSTANCE_ID }}
+          IMAGE_TAG: sha-${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REMOTE_SCRIPT=$(cat <<'SCRIPT'
+          set -eu
+
+          IMAGE="harsha2895/cloudops-prototype:IMAGE_TAG_PLACEHOLDER"
+          DB="/home/ec2-user/cloudops-data/cloudops.db"
+          OLD_NAME="cloudops-demo-old"
+          OLD_STOPPED=0
+          OLD_RENAMED=0
+          DEPLOY_OK=0
+
+          rollback() {
+            rc=$?
+
+            if [ "$DEPLOY_OK" -eq 1 ]; then
+              return 0
+            fi
+
+            echo "Deployment failed; attempting recovery."
+
+            if [ "$OLD_RENAMED" -eq 1 ]; then
+              docker rm -f cloudops-demo >/dev/null 2>&1 || true
+
+              if docker inspect "$OLD_NAME" >/dev/null 2>&1; then
+                docker rename "$OLD_NAME" cloudops-demo || true
+                docker start cloudops-demo || true
+              fi
+            elif [ "$OLD_STOPPED" -eq 1 ]; then
+              docker start cloudops-demo || true
+            fi
+
+            exit "$rc"
+          }
+
+          trap rollback EXIT
+
+          # Validate the current container and persistent database.
+          docker inspect cloudops-demo >/dev/null
+          test -f "$DB"
+
+          # Do not overwrite a previous rollback container.
+          if docker inspect "$OLD_NAME" >/dev/null 2>&1; then
+            echo "Rollback container already exists; refusing deployment."
+            exit 1
+          fi
+
+          # Pull the exact image built by this GitHub Actions run.
+          docker pull "$IMAGE"
+
+          # Back up the persistent database before changing it.
+          cp -p "$DB" "${DB}.predeploy"
+          chmod 600 "${DB}.predeploy"
+
+          # Stop the original container for a consistent database copy.
+          docker stop cloudops-demo
+          OLD_STOPPED=1
+
+          # Stage the database copy, then replace the persistent file.
+          docker cp cloudops-demo:/app/cloudops.db "${DB}.new"
+          chmod 644 "${DB}.new"
+          mv "${DB}.new" "$DB"
+
+          # Retain the old container until the new one passes health checks.
+          docker rename cloudops-demo "$OLD_NAME"
+          OLD_RENAMED=1
+          OLD_STOPPED=0
+
+          # Launch the new version using the persistent SQLite database.
+          docker run -d \
+            --name cloudops-demo \
+            --restart unless-stopped \
+            -p 80:5000 \
+            -v "${DB}:/app/cloudops.db" \
+            "$IMAGE"
+
+          # Wait up to 60 seconds for the health endpoint.
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1/api/health; then
+              echo
+              echo "Health check passed."
+
+              # The new deployment is healthy; disable rollback.
+              DEPLOY_OK=1
+              trap - EXIT
+
+              # Cleanup is non-fatal once the new container is healthy.
+              if ! docker rm "$OLD_NAME"; then
+                echo "Warning: old container cleanup failed."
+              fi
+
+              echo "Deployment successful."
+              exit 0
+            fi
+
+            sleep 3
+          done
+
+          echo "Health check failed."
+          docker logs --tail 100 cloudops-demo || true
+          exit 1
+          SCRIPT
+          )
+
+          REMOTE_SCRIPT="${REMOTE_SCRIPT//IMAGE_TAG_PLACEHOLDER/$IMAGE_TAG}"
+
+          PARAMS=$(jq -n --arg cmd "$REMOTE_SCRIPT" \
+            '{commands: [$cmd]}')
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "$PARAMS" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "Deployment command ID: $COMMAND_ID"
+
+          for i in $(seq 1 60); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || true)
+
+            case "$STATUS" in
+              Success)
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --query 'StandardOutputContent' \
+                  --output text
+                exit 0
+                ;;
+              Failed|TimedOut|Cancelled|Cancelling)
+                aws ssm get-command-invocation \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --output json
+                exit 1
+                ;;
+            esac
+
+            sleep 5
+          done
+
+          echo "Timed out waiting for deployment."
+          exit 1
